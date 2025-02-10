@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=1 python search.py --model deit_small_patch16_224 --batch-size 256 --data-set IMNET --data-path /home/as26840@ens.ad.etsmtl.ca/data/imagenet --output_dir /home/as26840@ens.ad.etsmtl.ca/repos/ViT-Slim/ViT-Slim/logs --pretrained_path /home/as26840@ens.ad.etsmtl.ca/weights/deit_small_patch16_224-cd65a155.pth --w1 2e-4 --w2 5e-5 --w3 1e-4

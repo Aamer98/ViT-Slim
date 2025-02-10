@@ -74,5 +74,5 @@ class SearchingDistillationLoss(torch.nn.Module):
 
     def forward(self, inputs, outputs, labels, model):
         base_loss = self.base_criterion(inputs, outputs, labels)
-        sparsity_loss_attn, sparsity_loss_mlp, sparsity_loss_patch = model.module.get_sparsity_loss(self.device)
+        sparsity_loss_attn, sparsity_loss_mlp, sparsity_loss_patch = model.get_sparsity_loss(self.device)
         return  base_loss + self.w1*sparsity_loss_attn + self.w2*sparsity_loss_mlp + self.w3*sparsity_loss_patch

@@ -12,6 +12,7 @@ from collections import defaultdict, deque
 import datetime
 
 import torch
+import torch.nn as nn
 import torch.distributed as dist
 
 

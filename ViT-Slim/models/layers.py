@@ -7,6 +7,7 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.num_patches = num_patches
         head_dim = dim // num_heads
+        self.head_dim = head_dim
         self.scale = qk_scale or head_dim ** -0.5
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -45,6 +46,7 @@ class SparseAttention(Attention):
         self.patch_activation = nn.Tanh()
     
     def forward(self, x):
+        breakpoint()
         z_patch = self.searched_patch_zeta if self.is_searched else self.patch_activation(self.patch_zeta)
         x *= z_patch
         B, N, C = x.shape

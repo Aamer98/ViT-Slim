@@ -3,6 +3,7 @@ import datetime
 import numpy as np
 import time
 import torch
+import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import json
 
@@ -22,6 +23,7 @@ from samplers import RASampler
 import models
 import utils
 import matplotlib.pyplot as plt
+from prune import prune_magnitude, prune_random
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
@@ -44,6 +46,10 @@ def get_args_parser():
     parser.set_defaults(model_ema=True)
     parser.add_argument('--model-ema-decay', type=float, default=0.99996, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
+
+    # Pruning parameters
+    parser.add_argument('--method', default='magnitude', type=str, help='choose from [magnitude, random]')
+    parser.add_argument('--sparsity_ratio', default=0.5, type=float, help='sparsity ratio')
 
     # Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
@@ -239,6 +245,7 @@ def main(args):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     print(f"Creating model: {args.model}")
+
     model = create_model(
         args.model,
         pretrained=False,
@@ -250,138 +257,38 @@ def main(args):
         head_search=args.head_search,
         uniform_search=args.uniform_search,
     )
-    
     model.load_state_dict(torch.load(args.pretrained_path)['model'], strict=False)
     model.to(device)
     model.correct_require_grad(args.w1, args.w2, args.w3)
 
-    if args.freeze_weights:
-        for name, p in model.named_parameters():
-            if "zeta" in name or "norm" in name:
-                p.requires_grad = True
-            else:
-                p.requires_grad = False
-    model_ema = None
-    if args.model_ema:
-        # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
-        model_ema = ModelEma(
-            model,
-            decay=args.model_ema_decay,
-            device='cpu' if args.model_ema_force_cpu else '',
-            resume='')
-
-    model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
-    optimizer = create_optimizer(args, model_without_ddp)
-    loss_scaler = NativeScaler()
-
-    lr_scheduler, _ = create_scheduler(args, optimizer)
-
-    criterion = LabelSmoothingCrossEntropy() 
-
-    if args.mixup > 0.:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif args.smoothing:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-
-    teacher_model = None
-    if args.distillation_type != 'none':
-        assert args.teacher_path, 'need to specify teacher-path when using distillation'
-        print(f"Creating teacher model: {args.teacher_model}")
-        teacher_model = create_model(
-            args.teacher_model,
-            pretrained=False,
-            num_classes=args.nb_classes,
-            global_pool='avg',
-        )
-        if args.teacher_path.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(
-                args.teacher_path, map_location='cpu', check_hash=True)
-        else:
-            checkpoint = torch.load(args.teacher_path, map_location='cpu')
-        teacher_model.load_state_dict(checkpoint['model'])
-        teacher_model.to(device)
-        teacher_model.eval()
-
-    # wrap the criterion in our custom DistillationLoss, which
-    # just dispatches to the original criterion if args.distillation_type is 'none'
-    criterion = DistillationLoss(
-        criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
-    )
-    criterion = SearchingDistillationLoss(
-        criterion, device, attn_w=args.w1, mlp_w=args.w2, patch_w=args.w3
-    )
 
     output_dir = Path(args.output_dir)
 
-    print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    max_soft_accuracy = 0.0
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+    
 
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, model_ema, mixup_fn, use_amp=False
-        )
-        if args.output_dir:
-            checkpoint_paths = [output_dir / 'running_ckpt.pth']
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'epoch': epoch,
-                    'model_ema': get_state_dict(model_ema),
-                    'scaler': loss_scaler.state_dict(),
-                    'args': args,
-                }, checkpoint_path)
+    model.eval()
 
-        test_stats = evaluate(data_loader_val, model, device, use_amp=False)
-        print(f"Soft Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_soft_accuracy = max(max_soft_accuracy, test_stats["acc1"])
-        print(f'Max soft accuracy: {max_soft_accuracy:.2f}%')
+    if args.method == 'magnitude':
+        prune_magnitude(model, sparsity_ratio=args.sparsity_ratio, device=torch.device("cuda:0"))
+    elif args.method == 'random':
+        prune_random(model, sparsity_ratio=args.sparsity_ratio, device=torch.device("cuda:0"))
+
+    test_stats = evaluate(data_loader_val, model, device, use_amp=False)
+    print(f"Soft Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+    max_soft_accuracy = test_stats["acc1"]
+    print(f'Max soft accuracy: {max_soft_accuracy:.2f}%')
         
-#         if args.output_dir and test_stats["acc1"]>=max_soft_accuracy:
-        checkpoint_paths = [output_dir / 'checkpoint.pth']
-        for checkpoint_path in checkpoint_paths:
-            utils.save_on_master({
-                'model': model_without_ddp.state_dict(),
-                'optimizer': optimizer.state_dict(),
-#                     'lr_scheduler': lr_scheduler.state_dict(),
-                'epoch': epoch,
-                'model_ema': get_state_dict(model_ema),
-                'scaler': loss_scaler.state_dict(),
-                'args': args,
-            }, checkpoint_path)
-                
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'soft_test_{k}': v for k, v in test_stats.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
-
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
-        zetas = model.give_zetas()
-        a=plt.hist(zetas, bins=1000)
-        path = output_dir / f'zetas_{epoch}.png'
-        plt.savefig(path)
-        plt.clf()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+
 
 
 if __name__ == '__main__':
