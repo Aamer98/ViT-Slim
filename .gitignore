@@ -1,4 +1,5 @@
-/home/as26840@ens.ad.etsmtl.ca/repos/ViT-Slim/ViT-Slim/logs
+ViT-Slim/logs
+ViT-Slim/frozen_logs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
