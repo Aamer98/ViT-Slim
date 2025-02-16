@@ -23,11 +23,13 @@ import models
 import utils
 import matplotlib.pyplot as plt
 
+from utils import no_ssl_verification
+
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=64, type=int)
-    parser.add_argument('--epochs', default=5, type=int)
-    parser.add_argument('--distributed', action='store_true')
+    parser.add_argument('--epochs', default=50, type=int)
+    parser.add_argument("--distributed", action="store_true")
 
     # Model parameters
     parser.add_argument('--model', default='deit_base_patch16_224', type=str, metavar='MODEL',
@@ -133,7 +135,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data-path', default='../imagenet/', type=str,
                         help='dataset path')
-    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19', 'IMNET100'],
+    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR100', 'CIFAR10', 'IMNET', 'INAT', 'INAT19', 'IMNET100'],
                         type=str, help='Image Net dataset path')
     parser.add_argument('--inat-category', default='name',
                         choices=['kingdom', 'phylum', 'class', 'order', 'supercategory', 'family', 'genus', 'name'],
@@ -171,11 +173,13 @@ def get_args_parser():
 
 
 def main(args):
-    utils.init_distributed_mode(args)
-    print(args)
-    args.w1/=args.world_size
-    args.w2/=args.world_size
-    args.w3/=args.world_size
+    # utils.init_distributed_mode(args)
+    # print(args)
+    
+    # the division related to distributed training
+    args.w1/=args.world_size # weight for attn sparsity
+    args.w2/=args.world_size # weight for mlp sparsity
+    args.w3/=args.world_size # weight for patch sparsity
 
     device = torch.device(args.device)
 
@@ -190,7 +194,7 @@ def main(args):
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
 
-    if args.distributed:  # args.distributed:
+    if args.distributed: #True:  # args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
         if args.repeated_aug:
@@ -239,6 +243,8 @@ def main(args):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     print(f"Creating model: {args.model}")
+
+
     model = create_model(
         args.model,
         pretrained=False,
@@ -250,13 +256,16 @@ def main(args):
         head_search=args.head_search,
         uniform_search=args.uniform_search,
     )
-    
+
     model.load_state_dict(torch.load(args.pretrained_path)['model'], strict=False)
+    breakpoint()
     model.to(device)
     model.correct_require_grad(args.w1, args.w2, args.w3)
-
+    
+    # freeze weights, but still update mask
     if args.freeze_weights:
         for name, p in model.named_parameters():
+            # why update layer norm affines only?
             if "zeta" in name or "norm" in name:
                 p.requires_grad = True
             else:
@@ -264,6 +273,7 @@ def main(args):
     model_ema = None
     if args.model_ema:
         # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
+        # maintain moving averages of the trained parameters
         model_ema = ModelEma(
             model,
             decay=args.model_ema_decay,
@@ -291,6 +301,8 @@ def main(args):
         criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
         criterion = torch.nn.CrossEntropyLoss()
+
+    # Where can distillation be used here?
 
     teacher_model = None
     if args.distillation_type != 'none':
@@ -325,6 +337,8 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_soft_accuracy = 0.0
+
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)

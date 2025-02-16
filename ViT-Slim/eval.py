@@ -1,9 +1,12 @@
+"""
+Based on Deit: Facebook, Inc.
+https://github.com/facebookresearch/deit/blob/main/main.py
+"""
 import argparse
 import datetime
 import numpy as np
 import time
 import torch
-import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import json
 
@@ -18,18 +21,15 @@ from timm.utils import NativeScaler, get_state_dict, ModelEma
 
 from datasets import build_dataset
 from engine import train_one_epoch, evaluate
-from losses import DistillationLoss, SearchingDistillationLoss
+from losses import DistillationLoss
 from samplers import RASampler
-import models
 import utils
-import matplotlib.pyplot as plt
-from prune import prune_magnitude, prune_random
+import models
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=64, type=int)
-    parser.add_argument('--epochs', default=5, type=int)
-    parser.add_argument('--distributed', action='store_true')
+    parser.add_argument('--epochs', default=300, type=int)
 
     # Model parameters
     parser.add_argument('--model', default='deit_base_patch16_224', type=str, metavar='MODEL',
@@ -47,10 +47,6 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.99996, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
 
-    # Pruning parameters
-    parser.add_argument('--method', default='magnitude', type=str, help='choose from [magnitude, random]')
-    parser.add_argument('--sparsity_ratio', default=0.5, type=float, help='sparsity ratio')
-
     # Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
                         help='Optimizer (default: "adamw"')
@@ -62,11 +58,11 @@ def get_args_parser():
                         help='Clip gradient norm (default: None, no clipping)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
-    parser.add_argument('--weight-decay', type=float, default=1e-3,
-                        help='weight decay (default: 1e-3)')
-    # Learning rate schedule parameters (if sched is none, warmup and min dont matter)
-    parser.add_argument('--sched', default='none', type=str, metavar='SCHEDULER',
-                        help='LR scheduler (default: "none"')
+    parser.add_argument('--weight-decay', type=float, default=0.05,
+                        help='weight decay (default: 0.05)')
+    # Learning rate schedule parameters
+    parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER',
+                        help='LR scheduler (default: "cosine"')
     parser.add_argument('--lr', type=float, default=5e-4, metavar='LR',
                         help='learning rate (default: 5e-4)')
     parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
@@ -79,6 +75,7 @@ def get_args_parser():
                         help='warmup learning rate (default: 1e-6)')
     parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
+
     parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                         help='epoch interval to decay LR')
     parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
@@ -136,24 +133,29 @@ def get_args_parser():
     parser.add_argument('--distillation-alpha', default=0.5, type=float, help="")
     parser.add_argument('--distillation-tau', default=1.0, type=float, help="")
 
+    # * Finetuning params
+    parser.add_argument('--finetune', default='', help='finetune from checkpoint')
+
     # Dataset parameters
     parser.add_argument('--data-path', default='../imagenet/', type=str,
                         help='dataset path')
-    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19', 'IMNET100'],
+    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR100', 'CIFAR10', 'CAR', 'FLOWER', 'IMNET', 'INAT', 'INAT19', 'IMNET100'],
                         type=str, help='Image Net dataset path')
     parser.add_argument('--inat-category', default='name',
                         choices=['kingdom', 'phylum', 'class', 'order', 'supercategory', 'family', 'genus', 'name'],
                         type=str, help='semantic granularity')
 
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--output_dir', default='exps/temp/',
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
+    parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
+    parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
     parser.add_argument('--dist-eval', action='store_true', default=False, help='Enabling distributed evaluation')
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--pin-mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem',
@@ -164,24 +166,24 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
-
-    # searching parameters
-    parser.add_argument('--w1', default=0.0001, type=float, help='weightage to attn sparsity')
-    parser.add_argument('--w2', default=0.0001, type=float, help='weightage to mlp sparsity')
-    parser.add_argument('--w3', default=0.0001, type=float, help='weightage to patch sparsity')
-    parser.add_argument('--pretrained_path', default='exps/deit_small/checkpoint.pth', type=str)
+    
+    # retraining parameters
+    parser.add_argument('--budget_attn', default=0.5, type=float)
+    parser.add_argument('--budget_mlp', default=0.5, type=float)
+    parser.add_argument('--budget_patch', default=0.5, type=float)
+    parser.add_argument('--searched_path', default='exps/deit_tiny_search/checkpoint.pth', type=str)
     parser.add_argument('--head_search', action='store_true')
     parser.add_argument('--uniform_search', action='store_true')
-    parser.add_argument('--freeze_weights', action='store_true')
     return parser
 
 
 def main(args):
     utils.init_distributed_mode(args)
+
     print(args)
-    args.w1/=args.world_size
-    args.w2/=args.world_size
-    args.w3/=args.world_size
+
+    if args.distillation_type != 'none' and args.finetune and not args.eval:
+        raise NotImplementedError("Finetuning with distillation not yet supported")
 
     device = torch.device(args.device)
 
@@ -189,14 +191,13 @@ def main(args):
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    # random.seed(seed)
 
     cudnn.benchmark = True
 
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
 
-    if args.distributed:  # args.distributed:
+    if True:  # args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
         if args.repeated_aug:
@@ -213,20 +214,12 @@ def main(args):
                       'This will slightly alter validation results as extra duplicate entries are added to achieve '
                       'equal num of samples per-process.')
             sampler_val = torch.utils.data.DistributedSampler(
-                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=False, )
+                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=False)
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
 
     data_loader_val = torch.utils.data.DataLoader(
         dataset_val, sampler=sampler_val,
@@ -245,7 +238,6 @@ def main(args):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     print(f"Creating model: {args.model}")
-
     model = create_model(
         args.model,
         pretrained=False,
@@ -257,42 +249,124 @@ def main(args):
         head_search=args.head_search,
         uniform_search=args.uniform_search,
     )
-    model.load_state_dict(torch.load(args.pretrained_path)['model'], strict=False)
-    model.to(device)
-    model.correct_require_grad(args.w1, args.w2, args.w3)
+    if args.finetune:
+        if args.finetune.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                args.finetune, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(args.finetune, map_location='cpu')
 
+        checkpoint_model = checkpoint['model']
+        state_dict = model.state_dict()
+        for k in ['head.weight', 'head.bias', 'head_dist.weight', 'head_dist.bias']:
+            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                print(f"Removing key {k} from pretrained checkpoint")
+                del checkpoint_model[k]
+
+        # interpolate position embedding
+        pos_embed_checkpoint = checkpoint_model['pos_embed']
+        embedding_size = pos_embed_checkpoint.shape[-1]
+        num_patches = model.patch_embed.num_patches
+        num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+        # height (== width) for the checkpoint position embedding
+        orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+        # height (== width) for the new position embedding
+        new_size = int(num_patches ** 0.5)
+        # class_token and dist_token are kept unchanged
+        extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+        # only the position tokens are interpolated
+        pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+        pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+        pos_tokens = torch.nn.functional.interpolate(
+            pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+        pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
+        new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+        checkpoint_model['pos_embed'] = new_pos_embed
+
+        model.load_state_dict(checkpoint_model, strict=False)
+    else:
+        model.load_state_dict(torch.load(args.searched_path, weights_only=False), strict=False)
+
+
+    model_path = '/home/aamer/weights/deit-small-patch16-224/deit_small_weights.pth'
+    searched_model_path = '/home/aamer/repos/ViT-Slim/ViT-Slim/logs/checkpoint.pth'
+
+    searched_weights = torch.load(searched_model_path, weights_only=False)['model']
+
+    with torch.no_grad():
+        for name, params in model.named_parameters():
+            if 'zeta' in name:
+                params.copy_(searched_weights[name])
+    model.to(device)
+
+    model_ema = None
+    if args.model_ema:
+        # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
+        model_ema = ModelEma(
+            model,
+            decay=args.model_ema_decay,
+            device='cpu' if args.model_ema_force_cpu else '',
+            resume='')
+
+    model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
+        thresh_attn, thresh_mlp, thresh_patch = model.module.compress(args.budget_attn, args.budget_mlp, args.budget_patch)
+        print('Searching threshold:', thresh_attn, thresh_mlp, thresh_patch)
+    
+    # activates the masked threshholding
+    model.eval()
+    thresh_attn, thresh_mlp, thresh_patch = model.compress(args.budget_attn, args.budget_mlp, args.budget_patch)
+    print('Searching threshold:', thresh_attn, thresh_mlp, thresh_patch)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
 
-    output_dir = Path(args.output_dir)
+    teacher_model = None
+    if args.distillation_type != 'none':
+        assert args.teacher_path, 'need to specify teacher-path when using distillation'
+        print(f"Creating teacher model: {args.teacher_model}")
+        teacher_model = create_model(
+            args.teacher_model,
+            pretrained=False,
+            num_classes=args.nb_classes,
+            global_pool='avg',
+        )
+        if args.teacher_path.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                args.teacher_path, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(args.teacher_path, map_location='cpu')
+        teacher_model.load_state_dict(checkpoint['model'])
+        teacher_model.to(device)
+        teacher_model.eval()
 
-    start_time = time.time()
-    
+    output_dir = Path(args.output_dir)
+    if args.resume:
+        if args.resume.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                args.resume, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(args.resume, map_location='cpu')
+        model_without_ddp.load_state_dict(checkpoint['model'])
+        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+            args.start_epoch = checkpoint['epoch'] + 1
+            if args.model_ema:
+                utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
+            if 'scaler' in checkpoint:
+                loss_scaler.load_state_dict(checkpoint['scaler'])
 
     model.eval()
-
-    if args.method == 'magnitude':
-        prune_magnitude(model, sparsity_ratio=args.sparsity_ratio, device=torch.device("cuda:0"))
-    elif args.method == 'random':
-        prune_random(model, sparsity_ratio=args.sparsity_ratio, device=torch.device("cuda:0"))
-
-    test_stats = evaluate(data_loader_val, model, device, use_amp=False)
-    print(f"Soft Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-    max_soft_accuracy = test_stats["acc1"]
-    print(f'Max soft accuracy: {max_soft_accuracy:.2f}%')
-        
-
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    test_stats = evaluate(data_loader_val, model, device)
+    print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
 
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('DeiT searching script', parents=[get_args_parser()])
+    parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,6 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.num_patches = num_patches
         head_dim = dim // num_heads
-        self.head_dim = head_dim
         self.scale = qk_scale or head_dim ** -0.5
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -46,7 +45,7 @@ class SparseAttention(Attention):
         self.patch_activation = nn.Tanh()
     
     def forward(self, x):
-        breakpoint()
+
         z_patch = self.searched_patch_zeta if self.is_searched else self.patch_activation(self.patch_zeta)
         x *= z_patch
         B, N, C = x.shape
@@ -142,15 +141,17 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+# Change: drop -> drop1. Should be ok. No parameters with that layer
 class SparseMlp(Mlp):
     def __init__(self, mlp_module):
-        super().__init__(mlp_module.fc1.in_features, mlp_module.fc1.out_features, mlp_module.fc2.out_features, act_layer=nn.GELU, drop=mlp_module.drop.p)
+        super().__init__(mlp_module.fc1.in_features, mlp_module.fc1.out_features, mlp_module.fc2.out_features, act_layer=nn.GELU, drop=mlp_module.drop1.p)
         self.is_searched = False
         self.num_gates = mlp_module.fc1.out_features
         self.zeta = nn.Parameter(torch.ones(1, 1, self.num_gates))
         self.searched_zeta = torch.ones_like(self.zeta)  
     
     def forward(self, x, patch_zeta=None):
+        # breakpoint()
         if patch_zeta is not None:
             x*=patch_zeta
         z = self.searched_zeta if self.is_searched else self.get_zeta()
@@ -166,6 +167,7 @@ class SparseMlp(Mlp):
         return self.zeta
     
     def compress(self, threshold):
+        # breakpoint()
         self.is_searched = True
         self.searched_zeta = (self.get_zeta()>=threshold).float()
         self.zeta.requires_grad = False

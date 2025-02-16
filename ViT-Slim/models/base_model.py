@@ -9,6 +9,7 @@ class BaseModel(nn.Module):
         self.searchable_modules = []
 
     def calculate_search_threshold(self, budget_attn, budget_mlp, budget_patch):
+        # breakpoint()
         zetas_attn, zetas_mlp, zetas_patch = self.give_zetas()
         zetas_attn = sorted(zetas_attn)
         zetas_mlp = sorted(zetas_mlp)
@@ -84,8 +85,11 @@ class BaseModel(nn.Module):
 
     def compress(self, budget_attn, budget_mlp, budget_patch):
         """compress the network to make zeta exactly 1 and 0"""
+        # breakpoint()
         if self.searchable_modules == []:
             self.searchable_modules = [m for m in self.modules() if hasattr(m, 'zeta')]
+        
+        # breakpoint()
         thresh_attn, thresh_mlp, thresh_patch = self.calculate_search_threshold(budget_attn, budget_mlp, budget_patch)
                 
         for l_block in self.searchable_modules:
@@ -94,6 +98,7 @@ class BaseModel(nn.Module):
             else:
                 l_block.compress(thresh_mlp)
         self.compress_patch(thresh_patch)
+        # breakpoint()
         return thresh_attn, thresh_mlp, 0
     
     def compress_patch(self, threshold):

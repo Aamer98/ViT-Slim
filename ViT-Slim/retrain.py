@@ -245,6 +245,7 @@ def main(args):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
+    breakpoint()
     print(f"Creating model: {args.model}")
     model = create_model(
         args.model,
@@ -257,7 +258,7 @@ def main(args):
         head_search=args.head_search,
         uniform_search=args.uniform_search,
     )
-
+    breakpoint()
     if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -294,7 +295,7 @@ def main(args):
 
         model.load_state_dict(checkpoint_model, strict=False)
     else:
-        model.load_state_dict(torch.load(args.searched_path)['model'], strict=False)
+        model.load_state_dict(torch.load(args.searched_path, weights_only=False)['model'], strict=False)
 
     model.to(device)
 
@@ -308,11 +309,17 @@ def main(args):
             resume='')
 
     model_without_ddp = model
+    breakpoint()
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
         thresh_attn, thresh_mlp, thresh_patch = model.module.compress(args.budget_attn, args.budget_mlp, args.budget_patch)
         print('Searching threshold:', thresh_attn, thresh_mlp, thresh_patch)
+    
+    breakpoint()
+    # activates the masked threshholding
+    # thresh_attn, thresh_mlp, thresh_patch = model.compress(args.budget_attn, args.budget_mlp, args.budget_patch)
+    # print('Searching threshold:', thresh_attn, thresh_mlp, thresh_patch)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
@@ -383,6 +390,7 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
+    breakpoint()
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)

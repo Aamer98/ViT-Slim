@@ -20,16 +20,17 @@ def train_one_epoch(model: torch.nn.Module, criterion,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
                     set_training_mode = True, use_amp=False):
+    breakpoint()
     model.train(set_training_mode)
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
-
+    breakpoint()
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-
+        breakpoint()
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
         if use_amp:
@@ -68,6 +69,7 @@ def train_one_epoch(model: torch.nn.Module, criterion,
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+    breakpoint()
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
