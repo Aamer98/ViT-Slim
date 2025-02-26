@@ -23,7 +23,8 @@ import models
 import utils
 import matplotlib.pyplot as plt
 
-from utils import no_ssl_verification
+import wandb
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
@@ -141,8 +142,6 @@ def get_args_parser():
                         choices=['kingdom', 'phylum', 'class', 'order', 'supercategory', 'family', 'genus', 'name'],
                         type=str, help='semantic granularity')
 
-    parser.add_argument('--output_dir', default='',
-                        help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
@@ -169,15 +168,34 @@ def get_args_parser():
     parser.add_argument('--head_search', action='store_true')
     parser.add_argument('--uniform_search', action='store_true')
     parser.add_argument('--freeze_weights', action='store_true')
+
+    # layer pruning addons
     parser.add_argument('--pruning_strategy', default='node', type=str, help='node, layer')
     parser.add_argument('--layer_activation', default='sigmoid', type=str, help='node, layer')
+
+    # logging
+    parser.add_argument('--output_dir', default='/home/aamer/repos/ViT-Slim/ViT-Slim/logs/search', type=str,
+                        help='path where to save, empty for no saving')
+    parser.add_argument('--wandb_project', type=str, default='vit-slim-search', help='Weights & Biases project name')
+
     return parser
 
 
 def main(args):
     # utils.init_distributed_mode(args)
     # print(args)
+    freeze_status = 'frozen' if args.freeze_weights else 'unfrozen'
+    experiment_name = f"{args.pruning_strategy}_{args.model}_{freeze_status}"
     
+    args.output_dir = Path(args.output_dir) / experiment_name
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    args.wandb_run_name = experiment_name
+    
+    if args.wandb_project:
+        print("Initializing wandb...")
+        run = wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args, resume=False)
+  
     # the division related to distributed training
     args.w1/=args.world_size # weight for attn sparsity
     args.w2/=args.world_size # weight for mlp sparsity
@@ -334,7 +352,7 @@ def main(args):
         criterion, device, attn_w=args.w1, mlp_w=args.w2, patch_w=args.w3
     )
 
-    output_dir = Path(args.output_dir)
+    output_dir = args.output_dir
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
@@ -366,14 +384,22 @@ def main(args):
         print(f"Soft Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         max_soft_accuracy = max(max_soft_accuracy, test_stats["acc1"])
         print(f'Max soft accuracy: {max_soft_accuracy:.2f}%')
-        
-#         if args.output_dir and test_stats["acc1"]>=max_soft_accuracy:
+
+
+        if wandb.run is not None:
+            for k, v in train_stats.items():
+                run.log({f"train/{k}": v})
+            for k, v in test_stats.items():
+                run.log({f"test/{k}": v})
+
+
+        # if args.output_dir and test_stats["acc1"]>=max_soft_accuracy:
         checkpoint_paths = [output_dir / 'checkpoint.pth']
         for checkpoint_path in checkpoint_paths:
             utils.save_on_master({
                 'model': model_without_ddp.state_dict(),
                 'optimizer': optimizer.state_dict(),
-#                     'lr_scheduler': lr_scheduler.state_dict(),
+                    # 'lr_scheduler': lr_scheduler.state_dict(),
                 'epoch': epoch,
                 'model_ema': get_state_dict(model_ema),
                 'scaler': loss_scaler.state_dict(),

@@ -1,12 +1,15 @@
+CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strat
+egy layer --freeze_weights
+
 CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy none &
 
 CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy layer & 
 
-CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy layer --freeze_weights &
+# CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy layer --freeze_weights &
 
-CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy node &
+# CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy node &
 
-CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy node --freeze_weights &
+# CUDA_VISIBLE_DEVICES=7 python search.py --model deit_small_patch16_224 --batch-size 32 --data-set IMNET --data-path /home/aamer/data/ImageNet --pretrained_path /home/aamer/weights/deit_small_patch16_224-cd65a155.pth --pruning_strategy node --freeze_weights &
 
 
 # # Retrain
