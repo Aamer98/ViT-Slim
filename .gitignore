@@ -1,5 +1,7 @@
 ViT-Slim/logs
 ViT-Slim/frozen_logs
+ViT-Slim/retrain
+ViT-Slim/profiling_log
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
