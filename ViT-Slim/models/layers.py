@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 
@@ -76,10 +77,10 @@ class SparseAttention(Attention):
         x = self.proj_drop(x)
 
         if self._prune_layer and self._prune_activation:
-            z = self.searched_zeta_layer if self.is_searched else self.get_zeta()
-            x *= torch.nn.functional.sigmoid(z)
+            z = self.searched_zeta_layer if self.is_searched else self.zeta_layer
+            x *= F.sigmoid(z)
         elif self._prune_layer:
-            z = self.searched_zeta_layer if self.is_searched else self.get_zeta()
+            z = self.searched_zeta_layer if self.is_searched else self.zeta_layer
             x *= z
 
         return x
@@ -213,7 +214,7 @@ class SparseMlp(Mlp):
         x = self.drop(x)
         if self._prune_layer and self._prune_activation:
             z = self.searched_zeta_layer if self.is_searched else self.get_zeta()
-            x *= torch.nn.functional.sigmoid(z)
+            x *= F.sigmoid(z)
         elif self._prune_layer:
             z = self.searched_zeta_layer if self.is_searched else self.get_zeta()
             x *= z
